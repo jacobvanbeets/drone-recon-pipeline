@@ -1,0 +1,57 @@
+# Build directories
+build/
+out/
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.db
+*.opendb
+*.VC.db
+*.VC.VC.opendb
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.cmake
+!CMakeLists.txt
+
+# Compiled files
+*.exe
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.dll
+*.exp
+
+# IDE files
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.log
+*.swp
+*~
+
+# User settings (keep these local)
+*.ini
+
+# Test output
+test_output/
+frames/
+colmap/
+metashape/
+realityscan/
