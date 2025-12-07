@@ -7,6 +7,8 @@ A Windows desktop application for processing drone video footage into 3D reconst
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-00599C)
 
+If you find this useful consider donating to my coffee fund https://paypal.me/creature259
+
 ## 🎯 Overview
 
 This application streamlines the process of preparing drone footage for 3D reconstruction and Gaussian Splatting workflows. It extracts frames from videos, automatically embeds GPS data from DJI SRT files, and processes them using industry-standard reconstruction tools.
