@@ -4,6 +4,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <algorithm>
 #include <windows.h>
 
 namespace fs = std::filesystem;
@@ -13,6 +14,17 @@ std::string getExecutableDir() {
     GetModuleFileNameA(NULL, buffer, MAX_PATH);
     fs::path exePath(buffer);
     return exePath.parent_path().string();
+}
+
+// Convert path to Windows short path name (8.3 format) to avoid space issues
+std::string getShortPathName(const std::string& longPath) {
+    char shortPath[MAX_PATH];
+    DWORD length = GetShortPathNameA(longPath.c_str(), shortPath, MAX_PATH);
+    if (length > 0 && length < MAX_PATH) {
+        return std::string(shortPath);
+    }
+    // If conversion fails, return original path
+    return longPath;
 }
 
 bool checkVendorFiles(LogCallback logCallback) {
@@ -59,7 +71,7 @@ int runCommandHidden(const std::string& command, LogCallback logCallback) {
     
     PROCESS_INFORMATION pi = {};
     
-    // Wrap command in cmd.exe /c for proper quote handling
+    // Wrap command in cmd.exe
     std::string fullCommand = "cmd.exe /c " + command;
     char* cmdLine = _strdup(fullCommand.c_str());
     
@@ -145,7 +157,8 @@ bool extractFrames(const std::string& videoPath, const std::string& outputDir,
     
     std::string outputPattern = (videoOutputDir / (videoStem + "_frame_%04d.jpg")).string();
     
-    // Windows requires the entire command to be wrapped in quotes when using std::system with quoted paths
+    // Build FFmpeg command with proper quoting for cmd.exe /c
+    // Need to wrap the entire command in outer quotes for paths with spaces
     std::ostringstream cmdStream;
     cmdStream << "\"\"" << ffmpegPath.string() << "\" -i \"" << videoPath 
               << "\" -vf fps=" << fps << " -q:v 2 \"" << outputPattern << "\"\"";
@@ -259,9 +272,28 @@ bool runColmap(const std::string& framesDir, const std::string& outputDir,
         return false;
     }
     
+    // Check for spaces in paths - COLMAP has issues with them
+    if (framesDir.find(' ') != std::string::npos || outputDir.find(' ') != std::string::npos) {
+        logCallback("");
+        logCallback("⚠⚠⚠ WARNING: SPACES IN PATHS DETECTED ⚠⚠⚠");
+        logCallback("COLMAP does not work reliably with spaces in file paths.");
+        logCallback("Please use paths without spaces, for example:");
+        logCallback("  Good: C:\\DroneOutput or C:\\Projects\\Output");
+        logCallback("  Bad:  C:\\Drone videos or C:\\My Projects\\Output");
+        logCallback("");
+        logCallback("Processing will likely FAIL. Please change your paths and try again.");
+        logCallback("");
+    }
+    
     logCallback("Using COLMAP: " + colmapPath.string());
     logCallback("Input frames: " + framesDir);
     logCallback("Output: " + outputDir);
+    
+    // Convert backslashes to forward slashes for COLMAP compatibility
+    std::string fixedFramesDir = framesDir;
+    std::string fixedOutputDir = outputDir;
+    std::replace(fixedFramesDir.begin(), fixedFramesDir.end(), '\\', '/');
+    std::replace(fixedOutputDir.begin(), fixedOutputDir.end(), '\\', '/');
     
     fs::path projectDir(outputDir);
     fs::path dbPath = projectDir / "database" / "database.db";
@@ -278,11 +310,18 @@ bool runColmap(const std::string& framesDir, const std::string& outputDir,
         return false;
     }
     
+    // Convert database and sparse paths to forward slashes
+    std::string fixedDbPath = dbPath.string();
+    std::string fixedSparseDir = sparseDir.string();
+    std::replace(fixedDbPath.begin(), fixedDbPath.end(), '\\', '/');
+    std::replace(fixedSparseDir.begin(), fixedSparseDir.end(), '\\', '/');
+    
     // Step 1: Feature extraction
     logCallback("Step 1/4: Feature Extraction...");
     std::string cmd = "\"\"" + colmapPath.string() + "\" feature_extractor --database_path \"" + 
-                     dbPath.string() + "\" --image_path \"" + framesDir + 
+                     fixedDbPath + "\" --image_path \"" + fixedFramesDir + 
                      "\" --ImageReader.single_camera 1\"";
+    logCallback("DEBUG: Full command: " + cmd);
     if (runCommand(cmd, logCallback) != 0) {
         logCallback("ERROR: Feature extraction failed");
         return false;
@@ -291,7 +330,7 @@ bool runColmap(const std::string& framesDir, const std::string& outputDir,
     // Step 2: Feature matching
     logCallback("Step 2/4: Feature Matching...");
     cmd = "\"\"" + colmapPath.string() + "\" exhaustive_matcher --database_path \"" + 
-          dbPath.string() + "\"\"";
+          fixedDbPath + "\"\"";
     if (runCommand(cmd, logCallback) != 0) {
         logCallback("ERROR: Feature matching failed");
         return false;
@@ -299,8 +338,8 @@ bool runColmap(const std::string& framesDir, const std::string& outputDir,
     
     // Step 3: Sparse reconstruction
     logCallback("Step 3/4: Sparse Reconstruction...");
-    cmd = "\"\"" + colmapPath.string() + "\" mapper --database_path \"" + dbPath.string() + 
-          "\" --image_path \"" + framesDir + "\" --output_path \"" + sparseDir.string() + "\"\"";
+    cmd = "\"\"" + colmapPath.string() + "\" mapper --database_path \"" + fixedDbPath + 
+          "\" --image_path \"" + fixedFramesDir + "\" --output_path \"" + fixedSparseDir + "\"\"";
     if (runCommand(cmd, logCallback) != 0) {
         logCallback("ERROR: Sparse reconstruction failed");
         return false;
@@ -308,9 +347,11 @@ bool runColmap(const std::string& framesDir, const std::string& outputDir,
     
     // Step 4: Image undistortion (outputs to images/ directory)
     logCallback("Step 4/4: Image Undistortion...");
-    cmd = "\"\"" + colmapPath.string() + "\" image_undistorter --image_path \"" + framesDir + 
-          "\" --input_path \"" + (sparseDir / "0").string() + 
-          "\" --output_path \"" + outputDir + "\" --output_type COLMAP\"";;
+    std::string fixedSparse0 = (sparseDir / "0").string();
+    std::replace(fixedSparse0.begin(), fixedSparse0.end(), '\\', '/');
+    cmd = "\"\"" + colmapPath.string() + "\" image_undistorter --image_path \"" + fixedFramesDir + 
+          "\" --input_path \"" + fixedSparse0 + 
+          "\" --output_path \"" + fixedOutputDir + "\" --output_type COLMAP\"";
     if (runCommand(cmd, logCallback) != 0) {
         logCallback("WARNING: Image undistortion failed, but sparse reconstruction succeeded");
     }
@@ -771,6 +812,36 @@ bool runPipeline(const PipelineConfig& config, LogCallback logCallback) {
     logCallback("=======================================================");
     logCallback("STEP 2: 3D Reconstruction");
     logCallback("=======================================================");
+    
+    // Check for spaces in paths when using COLMAP
+    if (config.method == ReconMethod::COLMAP) {
+        if (config.videoPath.find(' ') != std::string::npos || config.outputBaseDir.find(' ') != std::string::npos) {
+            logCallback("");
+            logCallback("⚠⚠⚠ WARNING: SPACES IN PATHS DETECTED ⚠⚠⚠");
+            logCallback("COLMAP does not work reliably with spaces in file paths.");
+            logCallback("");
+            logCallback("Your paths:");
+            logCallback("  Video: " + config.videoPath);
+            logCallback("  Output: " + config.outputBaseDir);
+            logCallback("");
+            logCallback("Please use paths WITHOUT spaces, for example:");
+            logCallback("  Good: C:\\DroneOutput or C:\\Projects\\Output");
+            logCallback("  Bad:  C:\\Drone videos or C:\\My Projects\\Output");
+            logCallback("");
+            logCallback("Processing will likely FAIL.");
+            logCallback("");
+            
+            // Show popup warning
+            std::string message = "WARNING: Your paths contain SPACES!\n\n"
+                                "COLMAP does not work with spaces in file paths.\n\n"
+                                "Video: " + config.videoPath + "\n"
+                                "Output: " + config.outputBaseDir + "\n\n"
+                                "Please use paths WITHOUT spaces.\n\n"
+                                "Processing will likely FAIL!\n\n"
+                                "Click OK to continue anyway (not recommended).";
+            MessageBoxA(NULL, message.c_str(), "COLMAP Path Warning", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+        }
+    }
     
     bool success = false;
     switch (config.method) {
