@@ -499,13 +499,13 @@ bool runRealityScan(const std::string& framesDir, const std::string& outputDir,
     fs::path outputPath(outputDir);
     fs::path projectFile = outputPath / "realityscan_project.rsproj";
     fs::path undistortedDir = outputPath / "undistorted";
-    fs::path sparseDir = undistortedDir / "sparse" / "0";
+    fs::path sparseDir = undistortedDir / "sparse";
+    fs::path sparse0Dir = sparseDir / "0";
     fs::path imagesDir = undistortedDir / "images";
-    fs::path registrationFile = undistortedDir / "sparse" / "registration.txt";
-    fs::path pointsFile = sparseDir / "points3D.txt";
+    fs::path registrationFile = sparseDir / "registration.txt";
     
     try {
-        fs::create_directories(sparseDir);
+        fs::create_directories(sparse0Dir);
         fs::create_directories(imagesDir);
     }
     catch (const std::exception& e) {
@@ -513,19 +513,9 @@ bool runRealityScan(const std::string& framesDir, const std::string& outputDir,
         return false;
     }
     
-    // Create empty points3D.txt file (RealityScan may not generate sparse points)
-    std::ofstream pointsOut(pointsFile);
-    if (pointsOut.is_open()) {
-        pointsOut << "# 3D point list with one line of data per point:\n";
-        pointsOut << "# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n";
-        pointsOut << "# Number of points: 0\n";
-        pointsOut.close();
-        logCallback("Created empty points3D.txt (RealityScan sparse export skipped)");
-    }
-    
     logCallback("Running RealityScan (this may take a while)...");
     
-    // Build RealityScan CLI command with export parameters
+    // Build RealityScan CLI command - use working commands
     std::string cmd = "\"\"" + realityscanExe + "\"" +
                      " -headless" +
                      " -newScene" +
@@ -550,14 +540,36 @@ bool runRealityScan(const std::string& framesDir, const std::string& outputDir,
     logCallback("");
     logCallback("Checking exports...");
     
+    // Check for all COLMAP files created by exportRegistration
+    fs::path camerasFile = sparseDir / "cameras.txt";
+    fs::path imagesFile = sparseDir / "Images.txt";
+    fs::path pointsFile = sparseDir / "points3D.txt";
+    
     // Verify expected outputs were created
     bool success = true;
     if (fs::exists(registrationFile)) {
-        logCallback("✅ Registration exported successfully");
+        logCallback("✅ registration.txt exported successfully");
     } else {
         logCallback("❌ Warning: registration.txt was not created");
-        logCallback("   Camera registration may have failed");
         success = false;
+    }
+    
+    if (fs::exists(camerasFile)) {
+        logCallback("✅ cameras.txt exported successfully");
+    } else {
+        logCallback("⚠ Warning: cameras.txt was not created");
+    }
+    
+    if (fs::exists(imagesFile)) {
+        logCallback("✅ Images.txt exported successfully");
+    } else {
+        logCallback("⚠ Warning: Images.txt was not created");
+    }
+    
+    if (fs::exists(pointsFile)) {
+        logCallback("✅ points3D.txt exported successfully");
+    } else {
+        logCallback("⚠ Warning: points3D.txt was not created");
     }
     
     if (fs::exists(imagesDir) && !fs::is_empty(imagesDir)) {
@@ -568,66 +580,45 @@ bool runRealityScan(const std::string& framesDir, const std::string& outputDir,
         success = false;
     }
     
-    // Copy COLMAP sparse files into images folder for Gaussian splatting compatibility
+    // Copy all COLMAP files to images/ and sparse/0/ folders
     if (success) {
         logCallback("");
-        logCallback("Copying COLMAP files to images folder for Gaussian splatting...");
+        logCallback("Organizing COLMAP files for Gaussian Splatting...");
         
         try {
-            // Copy registration.txt to images folder
-            if (fs::exists(registrationFile)) {
-                fs::path destReg = imagesDir / "registration.txt";
-                fs::copy_file(registrationFile, destReg, fs::copy_options::overwrite_existing);
-                logCallback("  Copied registration.txt");
-            }
-            
-            // Copy points3D.txt to images folder
-            if (fs::exists(pointsFile)) {
-                fs::path destPoints = imagesDir / "points3D.txt";
-                fs::copy_file(pointsFile, destPoints, fs::copy_options::overwrite_existing);
-                logCallback("  Copied points3D.txt");
-            }
-            
-            // Copy any other COLMAP files (cameras.txt, images.txt) if they exist
-            for (const auto& entry : fs::directory_iterator(undistortedDir / "sparse")) {
-                if (entry.is_regular_file()) {
-                    fs::path filename = entry.path().filename();
-                    std::string ext = filename.extension().string();
-                    if (ext == ".txt" || ext == ".bin") {
-                        fs::path dest = imagesDir / filename;
-                        fs::copy_file(entry.path(), dest, fs::copy_options::overwrite_existing);
-                        logCallback("  Copied " + filename.string());
-                    }
-                }
-            }
-            
-            // Also check sparse/0 folder
+            // Copy all .txt files from sparse/ to both images/ and sparse/0/
             for (const auto& entry : fs::directory_iterator(sparseDir)) {
-                if (entry.is_regular_file()) {
+                if (entry.is_regular_file() && entry.path().extension() == ".txt") {
                     fs::path filename = entry.path().filename();
-                    std::string ext = filename.extension().string();
-                    if (ext == ".txt" || ext == ".bin") {
-                        fs::path dest = imagesDir / filename;
-                        // Only copy if not already copied
-                        if (!fs::exists(dest)) {
-                            fs::copy_file(entry.path(), dest, fs::copy_options::overwrite_existing);
-                            logCallback("  Copied " + filename.string());
-                        }
-                    }
+                    
+                    // Convert to lowercase for consistency
+                    std::string lowercaseName = filename.string();
+                    std::transform(lowercaseName.begin(), lowercaseName.end(), 
+                                 lowercaseName.begin(), ::tolower);
+                    
+                    // Copy to images/ with lowercase name
+                    fs::path destImages = imagesDir / lowercaseName;
+                    fs::copy_file(entry.path(), destImages, fs::copy_options::overwrite_existing);
+                    
+                    // Copy to sparse/0/ with lowercase name
+                    fs::path destSparse = sparse0Dir / lowercaseName;
+                    fs::copy_file(entry.path(), destSparse, fs::copy_options::overwrite_existing);
+                    
+                    logCallback("  Copied " + filename.string() + " -> images/" + lowercaseName + " and sparse/0/" + lowercaseName);
                 }
             }
             
-            logCallback("✅ COLMAP files copied to images folder");
+            logCallback("✅ COLMAP files organized for Gaussian Splatting");
         }
         catch (const std::exception& e) {
-            logCallback("⚠ Warning: Failed to copy some COLMAP files: " + std::string(e.what()));
+            logCallback("⚠ Warning: Failed to copy some files: " + std::string(e.what()));
         }
     }
     
     logCallback("");
     logCallback("Output directory: " + undistortedDir.string());
-    logCallback("  Images + COLMAP data: " + imagesDir.string());
-    logCallback("  Sparse (original): " + sparseDir.string());
+    logCallback("  Images + registration: " + imagesDir.string());
+    logCallback("  Sparse (copy): " + sparse0Dir.string());
     
     if (!success) {
         logCallback("");
